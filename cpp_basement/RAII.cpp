@@ -4,8 +4,9 @@
 #include <string>
 
 using namespace std;
-#ifndef NODE_H
-#define NODE_H
+#ifndef __RAII_H__
+#define __RAII_H__
+#define TAG "RAII"
 
 class Node
 {
@@ -32,7 +33,8 @@ class Node
     Node* next_node;
 };
 
-#endif /* NODE_H */
+#endif /* ifndef __RAII_H__ */
+
 int main(int argc, char *argv[]){
   // smart pointers
   int a = 3;
@@ -42,6 +44,7 @@ int main(int argc, char *argv[]){
 
   // mutexes manager locks
 
+  
 
 
   Node* steve = new Node("Steve");
@@ -50,11 +53,13 @@ int main(int argc, char *argv[]){
   ashely->intro();
 
   if (true) {
-    return 1;
+    printf("%s module didn't end properly.\n", TAG);
+    return 0;
   }
 
   delete steve;
 
+  printf("%s module end properly.\n", TAG);
   return 0;
 }
 

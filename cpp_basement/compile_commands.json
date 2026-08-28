@@ -1,0 +1,8 @@
+[
+{
+  "directory": "/Volumes/HDD/aaronproj/AI_NPC_Learning/cpp_basement",
+  "command": "/usr/bin/c++   -std=gnu++14 -o CMakeFiles/RAII.dir/RAII.cpp.o -c /Volumes/HDD/aaronproj/AI_NPC_Learning/cpp_basement/RAII.cpp",
+  "file": "/Volumes/HDD/aaronproj/AI_NPC_Learning/cpp_basement/RAII.cpp",
+  "output": "CMakeFiles/RAII.dir/RAII.cpp.o"
+}
+]

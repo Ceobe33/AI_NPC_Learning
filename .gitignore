@@ -1,4 +1,4 @@
-build
+build*
 
 .cache
 *.o
@@ -12,3 +12,5 @@ Makefile
 cmake_install.cmake
 
 node_modules
+
+app

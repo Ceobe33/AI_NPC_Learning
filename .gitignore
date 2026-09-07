@@ -2,6 +2,7 @@ build*
 
 .cache
 *.o
+*.out
 *.s
 
 NERD*

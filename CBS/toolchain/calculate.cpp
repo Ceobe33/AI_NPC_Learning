@@ -1,25 +1,22 @@
 #include <stdio.h>
+#include <iostream>
 
-int cal(int a, int b)
-{
-  int c = a + b;
-  int d = c * c;
-  return d;
+int cal(int a) {
+  int x = a;
+  return x*2+x*2;
 }
-int main(int argc, char *argv[])
-{
-  cal(3,4);
-  return 0;
+int main(int argc, char *argv[]){
+  int result = cal(3);
+  return result;
 }
 
 /*
- [observation]
- o0
- - operation 'add' has been call two times,but only one add expression in my code
- - every single operation result will be stored for next usage
- - 
- [hypothesise]
 
-
+[Observation]
+[Hypothesise]
+[Uncertain]
+[Experiment]
+[Result]
+[Conclusion]
 
  */

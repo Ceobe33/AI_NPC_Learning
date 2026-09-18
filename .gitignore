@@ -15,3 +15,6 @@ cmake_install.cmake
 node_modules
 
 app
+.DS_Store
+.workbuddy
+tags

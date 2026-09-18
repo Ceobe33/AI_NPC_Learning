@@ -2,6 +2,7 @@
 
 #include "PlatformGL.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
 #include <vector>
@@ -199,11 +200,15 @@ bool SpinePlayer::Load(SpineAsset& asset) {
 
     CreateGLObjects();
 
+    // Frame whatever the skeleton looks like before an animation is picked.
+    RefreshContentBounds();
+
     return true;
 }
 
 void SpinePlayer::Unload() {
     DestroyGLObjects();
+    ResetContentBounds();
 
     asset_ = nullptr;
     animation_.clear();
@@ -237,10 +242,104 @@ void SpinePlayer::SetAnimation(const std::string& name, bool loop) {
 
     animation_ = name;
     asset_->GetRuntime()->SetAnimation(name, loop);
+
+    // Every animation covers a different area, so the framing has to be
+    // measured again instead of reusing the previous one.
+    RefreshContentBounds();
 }
 
 const std::string& SpinePlayer::GetAnimation() const {
     return animation_;
+}
+
+void SpinePlayer::ResetContentBounds() {
+    hasContentBounds_ = false;
+    contentMinX_ = 0.0f;
+    contentMinY_ = 0.0f;
+    contentMaxX_ = 0.0f;
+    contentMaxY_ = 0.0f;
+}
+
+bool SpinePlayer::GetContentBounds(float& minX, float& minY, float& maxX,
+                                   float& maxY) const {
+    if (!hasContentBounds_) {
+        return false;
+    }
+
+    minX = contentMinX_;
+    minY = contentMinY_;
+    maxX = contentMaxX_;
+    maxY = contentMaxY_;
+
+    return true;
+}
+
+void SpinePlayer::AccumulateContentBounds() {
+    if (!IsLoaded()) {
+        return;
+    }
+
+    for (const SpineDrawBatch& batch : asset_->GetRuntime()->BuildDrawBatches()) {
+        const size_t vertexCount = batch.positions.size() / 2;
+
+        for (size_t i = 0; i < vertexCount; ++i) {
+            const float x = batch.positions[i * 2];
+            const float y = batch.positions[i * 2 + 1];
+
+            if (!hasContentBounds_) {
+                contentMinX_ = x;
+                contentMaxX_ = x;
+                contentMinY_ = y;
+                contentMaxY_ = y;
+                hasContentBounds_ = true;
+                continue;
+            }
+
+            if (x < contentMinX_) {
+                contentMinX_ = x;
+            }
+
+            if (x > contentMaxX_) {
+                contentMaxX_ = x;
+            }
+
+            if (y < contentMinY_) {
+                contentMinY_ = y;
+            }
+
+            if (y > contentMaxY_) {
+                contentMaxY_ = y;
+            }
+        }
+    }
+}
+
+void SpinePlayer::RefreshContentBounds() {
+    ResetContentBounds();
+
+    if (!IsLoaded()) {
+        return;
+    }
+
+    const float duration = GetDuration();
+
+    if (duration <= 0.0f) {
+        // No animation (or an empty one): frame the pose that is applied now.
+        AccumulateContentBounds();
+        return;
+    }
+
+    // Sample the whole clip so the framing is stable from the first frame
+    // instead of slowly widening as playback reaches new extremes.
+    const float savedTime = GetTime();
+    const int samples = 24;
+
+    for (int i = 0; i < samples; ++i) {
+        Seek(duration * static_cast<float>(i) / static_cast<float>(samples));
+        AccumulateContentBounds();
+    }
+
+    Seek(savedTime);
 }
 
 void SpinePlayer::SetSpeed(float speed) {
@@ -410,7 +509,24 @@ bool SpinePlayer::GetCamera(int width, int height, const SpineView& view,
     float boundsWidth = 1.0f;
     float boundsHeight = 1.0f;
 
-    asset_->GetBounds(boundsX, boundsY, boundsWidth, boundsHeight);
+    // Prefer the rectangle the animation actually covers. The bounds stored in
+    // the skeleton data are the size of the editor canvas the asset was
+    // authored on (SkeletonJson reads them straight out of the "skeleton"
+    // object), which can be several times larger than the skeleton and is
+    // centred on the canvas rather than on the skeleton.
+    float minX = 0.0f;
+    float minY = 0.0f;
+    float maxX = 0.0f;
+    float maxY = 0.0f;
+
+    if (GetContentBounds(minX, minY, maxX, maxY)) {
+        boundsX = minX;
+        boundsY = minY;
+        boundsWidth = maxX - minX;
+        boundsHeight = maxY - minY;
+    } else {
+        asset_->GetBounds(boundsX, boundsY, boundsWidth, boundsHeight);
+    }
 
     if (boundsWidth < 1.0f) {
         boundsWidth = 1.0f;
@@ -428,9 +544,21 @@ bool SpinePlayer::GetCamera(int width, int height, const SpineView& view,
                           : view.padding > 0.9f ? 0.9f
                                                 : view.padding;
 
-    scale = std::min(static_cast<float>(width) / boundsWidth,
-                     static_cast<float>(height) / boundsHeight) *
-            (1.0f - padding) * (view.zoom > 0.01f ? view.zoom : 0.01f);
+    // Contain leaves the limiting axis just inside the canvas; Fill covers
+    // both axes and lets the excess spill out.
+    const float fitScale = view.fit == SpineView::Fit_Fill
+                               ? std::max(static_cast<float>(width) / boundsWidth,
+                                          static_cast<float>(height) / boundsHeight)
+                               : std::min(static_cast<float>(width) / boundsWidth,
+                                          static_cast<float>(height) / boundsHeight);
+
+    // In Contain the padding pulls the content away from the canvas edge; in
+    // Fill it pushes past it, which is what guarantees no empty band.
+    const float paddingScale = view.fit == SpineView::Fit_Fill ? (1.0f + padding)
+                                                               : (1.0f - padding);
+
+    scale = fitScale * paddingScale *
+            (view.zoom > 0.01f ? view.zoom : 0.01f);
 
     return true;
 }
@@ -561,6 +689,32 @@ void SpinePlayer::Draw(int width, int height, float background[4],
             vertex.y = batch.positions[i * 2 + 1];
             vertex.u = batch.uvs[i * 2];
             vertex.v = batch.uvs[i * 2 + 1];
+
+            // Keep the fitted rectangle in step with poses that were never
+            // sampled, e.g. reached by dragging the timeline.
+            if (!hasContentBounds_) {
+                contentMinX_ = vertex.x;
+                contentMaxX_ = vertex.x;
+                contentMinY_ = vertex.y;
+                contentMaxY_ = vertex.y;
+                hasContentBounds_ = true;
+            } else {
+                if (vertex.x < contentMinX_) {
+                    contentMinX_ = vertex.x;
+                }
+
+                if (vertex.x > contentMaxX_) {
+                    contentMaxX_ = vertex.x;
+                }
+
+                if (vertex.y < contentMinY_) {
+                    contentMinY_ = vertex.y;
+                }
+
+                if (vertex.y > contentMaxY_) {
+                    contentMaxY_ = vertex.y;
+                }
+            }
 
             const unsigned int color = batch.colors[i];
             vertex.r = static_cast<unsigned char>((color >> 16) & 0xff);

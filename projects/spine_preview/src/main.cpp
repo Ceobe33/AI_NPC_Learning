@@ -32,12 +32,17 @@ const float kMaxZoom = 32.0f;
 char gSpeedBuffer[16] = "1.00";
 bool gSpeedEditing = false;
 
+// Index into the "Off / x2 / x3 / x4" supersampling combo.
+int gSupersampleIndex = 1;
+
 void ClampExportSettings() {
     gApp.gifSettings.width = ImClamp(gApp.gifSettings.width, 16, 2048);
     gApp.gifSettings.height = ImClamp(gApp.gifSettings.height, 16, 2048);
     gApp.gifSettings.fps = ImClamp(gApp.gifSettings.fps, 1, 60);
     gApp.gifSettings.alphaThreshold =
         ImClamp(gApp.gifSettings.alphaThreshold, 1, 255);
+    gApp.gifSettings.supersample = ImClamp(gApp.gifSettings.supersample, 1, 4);
+    gSupersampleIndex = gApp.gifSettings.supersample - 1;
 }
 
 void WriteSpeedBuffer(float speed) {
@@ -120,6 +125,25 @@ static void DrawSkeletonPanel() {
                     static_cast<int>(gApp.asset.GetAnimations().size()));
         ImGui::Text("Premultiplied alpha: %s",
                     gApp.asset.UsesPremultipliedAlpha() ? "yes" : "no");
+
+        // Diagnostics for the framing: if these two differ a lot, the
+        // skeleton data describes a canvas much larger than the animation.
+        float minX = 0.0f;
+        float minY = 0.0f;
+        float maxX = 0.0f;
+        float maxY = 0.0f;
+
+        if (gApp.player.GetContentBounds(minX, minY, maxX, maxY)) {
+            ImGui::Text("Animation area: %.0f x %.0f", maxX - minX, maxY - minY);
+        }
+
+        float boundsX = 0.0f;
+        float boundsY = 0.0f;
+        float boundsWidth = 0.0f;
+        float boundsHeight = 0.0f;
+        gApp.asset.GetBounds(boundsX, boundsY, boundsWidth, boundsHeight);
+
+        ImGui::Text("Skeleton bounds: %.0f x %.0f", boundsWidth, boundsHeight);
 
         ImGui::Spacing();
 
@@ -264,6 +288,23 @@ static void DrawPreviewToolbar() {
 
     if (ImGui::Button("Fit", ImVec2(46.0f, 0.0f))) {
         ResetPreviewView();
+    }
+
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(96.0f);
+
+    int fitMode = static_cast<int>(gApp.previewView.fit);
+
+    if (ImGui::Combo("##FitMode", &fitMode, "Contain\0Fill\0")) {
+        gApp.previewView.fit = static_cast<SpineView::FitMode>(fitMode);
+    }
+
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Contain - the whole animation fits, with empty canvas left on\n"
+            "the longer axis.\n"
+            "Fill - the panel is covered completely, overflowing parts are\n"
+            "cropped.");
     }
 
     ImGui::SameLine();
@@ -425,8 +466,44 @@ static void DrawExportDialog() {
 
     ImGui::InputInt("Width", &gApp.gifSettings.width);
     ImGui::InputInt("Height", &gApp.gifSettings.height);
+
+    if (gApp.GetPreviewWidth() > 0 && gApp.GetPreviewHeight() > 0) {
+        ImGui::SameLine();
+
+        if (ImGui::Button("Match preview")) {
+            gApp.gifSettings.width = gApp.GetPreviewWidth();
+            gApp.gifSettings.height = gApp.GetPreviewHeight();
+        }
+
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Use the current size of the Preview panel (%dx%d).",
+                              gApp.GetPreviewWidth(), gApp.GetPreviewHeight());
+        }
+    }
+
     ImGui::SliderInt("FPS", &gApp.gifSettings.fps, 1, 60);
     ImGui::Checkbox("Transparent background", &gApp.gifSettings.transparent);
+
+    ImGui::Checkbox("Dither", &gApp.gifSettings.dither);
+
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Spreads the 256-colour quantisation error over neighbouring "
+            "pixels. Removes banding in gradients and soft shading.");
+    }
+
+    ImGui::Text("Supersampling");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::Combo("##Supersampling", &gSupersampleIndex, "Off\0x2\0x3\0x4\0");
+    gApp.gifSettings.supersample = gSupersampleIndex + 1;
+
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Renders every frame larger and filters it down, so edges stay "
+            "smooth instead of stair-stepping at the alpha cut-off. Slower, "
+            "but much closer to what the preview shows.");
+    }
 
     if (gApp.gifSettings.transparent) {
         // GIF has no partial transparency, so every pixel is snapped to fully

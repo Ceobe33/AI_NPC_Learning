@@ -10,6 +10,16 @@ struct GifExportSettings {
 
     bool transparent = false;
 
+    // Floyd-Steinberg dithering. GIF can only store 256 colours per frame, so
+    // without it gradients and soft shading come out as visible bands.
+    bool dither = true;
+
+    // Renders every frame at this multiple of the output size and box-filters
+    // it down. Gives the encoder real coverage values to work with, which is
+    // what keeps the edges of the skeleton smooth after the alpha cut-off.
+    // 1 disables it.
+    int supersample = 2;
+
     // GIF has no partial transparency, so the alpha of every pixel is snapped
     // to 0 or 255 at this cut-off (0-255).
     int alphaThreshold = 128;

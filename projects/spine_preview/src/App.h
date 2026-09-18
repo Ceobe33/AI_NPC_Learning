@@ -27,6 +27,12 @@ public:
 
     unsigned int GetPreviewTexture() const;
 
+    // Size of the last rendered preview panel, used to offer an export that
+    // matches what is on screen.
+    int GetPreviewWidth() const;
+
+    int GetPreviewHeight() const;
+
     // Renders the pose at the export resolution, using the export settings
     // (size, background, transparency). Returns the texture to display, or 0.
     unsigned int RenderExportPreview();
@@ -90,13 +96,18 @@ private:
     RenderTarget previewTarget_;
     RenderTarget exportPreviewTarget_;
 
+    int previewWidth_ = 0;
+    int previewHeight_ = 0;
+
     GifEncoder gifEncoder_;
     RenderTarget exportTarget_;
     std::vector<unsigned char> framePixels_;
+    std::vector<unsigned char> sourcePixels_;
 
     bool exporting_ = false;
     int exportFrame_ = 0;
     int exportFrameCount_ = 0;
+    int exportScale_ = 1;
     float exportTimeBeforeStart_ = 0.0f;
     bool exportResumePlayback_ = false;
 };

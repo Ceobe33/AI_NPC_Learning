@@ -46,7 +46,14 @@ struct SpineView {
     float zoom = 1.0f;
 
     // Fraction of the canvas kept free around the skeleton when fitting.
-    float padding = 0.12f;
+    float padding = 0.04f;
+
+    // Fit mode. Contain scales the content until one axis touches the canvas
+    // (aspect preserving, may leave empty canvas on the other axis). Fill
+    // scales until both axes are covered, which crops whatever overflows.
+    enum FitMode { Fit_Contain = 0, Fit_Fill = 1 };
+
+    FitMode fit = Fit_Contain;
 
     // Draw the grey/white checkerboard instead of a flat clear colour.
     bool grid = true;
@@ -106,6 +113,17 @@ public:
                    float& boundsCenterX, float& boundsCenterY,
                    float& scale) const;
 
+    // Rebuilds the rectangle that the current animation actually covers. The
+    // skeleton data only carries the size of the editor canvas it was
+    // authored on, which is usually far larger (and differently centred) than
+    // the skeleton itself, so fitting to it wastes most of the viewport.
+    void RefreshContentBounds();
+
+    // Corners of the rectangle RefreshContentBounds() measured, in skeleton
+    // units. Empty until something has been rendered.
+    bool GetContentBounds(float& minX, float& minY, float& maxX,
+                          float& maxY) const;
+
 private:
     void CreateGLObjects();
 
@@ -113,6 +131,12 @@ private:
 
     void DrawGrid(int width, int height, float centerX, float centerY,
                   float scale, const SpineView& view);
+
+    void ResetContentBounds();
+
+    // Widens the measured rectangle to cover the geometry of the pose that is
+    // currently applied.
+    void AccumulateContentBounds();
 
     SpineAsset* asset_ = nullptr;
     std::string animation_;
@@ -128,6 +152,14 @@ private:
     unsigned int indexBuffer_ = 0;
     int vertexCapacity_ = 0;
     int indexCapacity_ = 0;
+
+    // Union of the geometry drawn so far, in skeleton units. Accumulated while
+    // drawing so that poses reached only by scrubbing are framed too.
+    bool hasContentBounds_ = false;
+    float contentMinX_ = 0.0f;
+    float contentMinY_ = 0.0f;
+    float contentMaxX_ = 0.0f;
+    float contentMaxY_ = 0.0f;
 };
 
 #endif /* ifndef __SPINERENDERER_H__ */

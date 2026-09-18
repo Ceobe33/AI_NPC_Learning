@@ -3,11 +3,51 @@
 #include "FileDialog.h"
 #include "PlatformGL.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace {
 
 const char* kSkeletonFilters[] = {"json", "skel"};
+
+// Upper bound for the supersampled export framebuffer (per axis).
+const int kMaxExportDimension = 4096;
+
+// Averaging premultiplied RGBA is linear, so box-filtering the supersampled
+// framebuffer gives the same result as rendering the frame with real coverage
+// antialiasing - which is what keeps the skeleton edges from stair-stepping
+// once the alpha is snapped to the GIF cut-off.
+void BoxDownsample(const unsigned char* src, int srcWidth, int srcHeight,
+                   unsigned char* dst, int dstWidth, int dstHeight,
+                   int scale) {
+    for (int y = 0; y < dstHeight; ++y) {
+        for (int x = 0; x < dstWidth; ++x) {
+            unsigned int sum[4] = {0, 0, 0, 0};
+
+            for (int sy = 0; sy < scale; ++sy) {
+                const unsigned char* row =
+                    src + ((static_cast<size_t>(y) * scale + sy) * srcWidth +
+                           static_cast<size_t>(x) * scale) *
+                              4;
+
+                for (int sx = 0; sx < scale; ++sx) {
+                    sum[0] += row[sx * 4 + 0];
+                    sum[1] += row[sx * 4 + 1];
+                    sum[2] += row[sx * 4 + 2];
+                    sum[3] += row[sx * 4 + 3];
+                }
+            }
+
+            const unsigned int samples = static_cast<unsigned int>(scale * scale);
+            unsigned char* out = dst + (static_cast<size_t>(y) * dstWidth + x) * 4;
+
+            for (int c = 0; c < 4; ++c) {
+                out[c] = static_cast<unsigned char>((sum[c] + samples / 2) / samples);
+            }
+        }
+    }
+}
 
 } // namespace
 
@@ -163,6 +203,9 @@ void App::RenderPreview(int width, int height) {
         return;
     }
 
+    previewWidth_ = width;
+    previewHeight_ = height;
+
     previewTarget_.Bind();
     player.Draw(width, height, background, previewView);
     previewTarget_.Unbind();
@@ -170,6 +213,14 @@ void App::RenderPreview(int width, int height) {
 
 unsigned int App::GetPreviewTexture() const {
     return previewTarget_.GetTexture();
+}
+
+int App::GetPreviewWidth() const {
+    return previewWidth_;
+}
+
+int App::GetPreviewHeight() const {
+    return previewHeight_;
 }
 
 unsigned int App::RenderExportPreview() {
@@ -233,7 +284,18 @@ bool App::StartGifExport(const std::string& path) {
         return false;
     }
 
-    if (!exportTarget_.Resize(gifSettings.width, gifSettings.height)) {
+    exportScale_ = std::max(1, std::min(4, gifSettings.supersample));
+
+    // Keep the supersampled framebuffer within what the GL driver will
+    // actually allocate.
+    while (exportScale_ > 1 &&
+           (gifSettings.width * exportScale_ > kMaxExportDimension ||
+            gifSettings.height * exportScale_ > kMaxExportDimension)) {
+        --exportScale_;
+    }
+
+    if (!exportTarget_.Resize(gifSettings.width * exportScale_,
+                              gifSettings.height * exportScale_)) {
         errorMessage = "Could not allocate the export render target.";
         return false;
     }
@@ -248,8 +310,12 @@ bool App::StartGifExport(const std::string& path) {
         return false;
     }
 
-    framePixels_.resize(static_cast<size_t>(gifSettings.width) *
-                        static_cast<size_t>(gifSettings.height) * 4);
+    const size_t frameBytes = static_cast<size_t>(gifSettings.width) *
+                              static_cast<size_t>(gifSettings.height) * 4;
+
+    framePixels_.resize(frameBytes);
+    sourcePixels_.resize(frameBytes * static_cast<size_t>(exportScale_) *
+                         static_cast<size_t>(exportScale_));
 
     exportTimeBeforeStart_ = player.GetTime();
     exportResumePlayback_ = player.IsPlaying();
@@ -272,8 +338,10 @@ bool App::StepGifExport() {
         return false;
     }
 
-    const int width = exportTarget_.GetWidth();
-    const int height = exportTarget_.GetHeight();
+    const int width = gifSettings.width;
+    const int height = gifSettings.height;
+    const int sourceWidth = width * exportScale_;
+    const int sourceHeight = height * exportScale_;
 
     player.Seek(static_cast<float>(exportFrame_) /
                 static_cast<float>(gifSettings.fps));
@@ -295,14 +363,22 @@ bool App::StepGifExport() {
     // aid.
     SpineView exportView;
     exportView.grid = false;
-    exportView.padding = 0.12f;
+    exportView.padding = 0.04f;
 
     exportTarget_.Bind();
-    player.Draw(width, height, exportBackground, exportView);
+    player.Draw(sourceWidth, sourceHeight, exportBackground, exportView);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE,
-                 framePixels_.data());
+    glReadPixels(0, 0, sourceWidth, sourceHeight, GL_RGBA, GL_UNSIGNED_BYTE,
+                 sourcePixels_.data());
     exportTarget_.Unbind();
+
+    if (exportScale_ > 1) {
+        BoxDownsample(sourcePixels_.data(), sourceWidth, sourceHeight,
+                      framePixels_.data(), width, height, exportScale_);
+    } else {
+        std::memcpy(framePixels_.data(), sourcePixels_.data(),
+                    framePixels_.size());
+    }
 
     gifEncoder_.WriteFrame(framePixels_.data(), width, height);
 

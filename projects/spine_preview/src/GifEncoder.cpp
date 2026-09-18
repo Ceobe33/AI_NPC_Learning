@@ -74,7 +74,7 @@ bool GifEncoder::Begin(const std::string& path, const GifExportSettings& setting
     if (!GifBegin(&impl_->writer, path.c_str(),
                   static_cast<uint32_t>(settings.width),
                   static_cast<uint32_t>(settings.height),
-                  static_cast<uint32_t>(impl_->frameDelay), 8, false,
+                  static_cast<uint32_t>(impl_->frameDelay), 8, settings.dither,
                   alphaThreshold)) {
         error_ = "Could not create file: " + path;
         delete impl_;

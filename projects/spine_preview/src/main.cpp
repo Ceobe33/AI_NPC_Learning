@@ -1,7 +1,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
+#include <string>
 
 #include "imgui_internal.h"
 
@@ -34,6 +36,44 @@ bool gSpeedEditing = false;
 
 // Index into the "Off / x2 / x3 / x4" supersampling combo.
 int gSupersampleIndex = 1;
+
+std::string Lowercase(const std::string& text) {
+    std::string result = text;
+
+    for (char& c : result) {
+        if (c >= 'A' && c <= 'Z') {
+            c = static_cast<char>(c - 'A' + 'a');
+        }
+    }
+
+    return result;
+}
+
+// Loads `path` when it names a skeleton file. Returns whether it was loaded.
+// This is what makes the tool usable on platforms without a native open dialog.
+bool TryOpenSkeleton(const std::filesystem::path& path) {
+    std::error_code error;
+
+    if (path.empty() || !std::filesystem::is_regular_file(path, error)) {
+        return false;
+    }
+
+    const std::string extension = Lowercase(path.extension().string());
+
+    if (extension != ".json" && extension != ".skel") {
+        return false;
+    }
+
+    return gApp.OpenSkeleton(path);
+}
+
+void HandleFileDrop(GLFWwindow*, int count, const char** paths) {
+    for (int i = 0; i < count; ++i) {
+        if (paths[i] != nullptr && TryOpenSkeleton(paths[i])) {
+            return;
+        }
+    }
+}
 
 void ClampExportSettings() {
     gApp.gifSettings.width = ImClamp(gApp.gifSettings.width, 16, 2048);
@@ -108,6 +148,14 @@ static void DrawSkeletonPanel() {
 
     ImGui::Text("Skeleton Files");
     ImGui::Separator();
+
+    if (!FileDialog::Available()) {
+        ImGui::TextWrapped(
+            "This platform has no file dialog. Drop a .json or .skel file onto "
+            "the window, or pass it on the command line. GIF exports are "
+            "written to the working directory.");
+        ImGui::Spacing();
+    }
 
     if (ImGui::Button("Open File")) {
         gApp.OpenSkeletonDialog();
@@ -527,8 +575,15 @@ static void DrawExportDialog() {
                           gApp.player.GetAnimation() + ".gif";
         }
 
-        const std::string path =
+        std::string path =
             FileDialog::SaveFile("Export GIF", defaultName, {"gif"});
+
+        // Without a native dialog every export would be cancelled silently, so
+        // write into the working directory instead.
+        if (path.empty() && !FileDialog::Available()) {
+            std::error_code error;
+            path = (std::filesystem::current_path(error) / defaultName).string();
+        }
 
         if (!path.empty()) {
             if (gApp.StartGifExport(path)) {
@@ -646,7 +701,7 @@ static void HandleShortcuts() {
     }
 }
 
-int main() {
+int main(int argc, char** argv) {
     // --------------------------------------------------------
     // Initialize GLFW
     // --------------------------------------------------------
@@ -673,7 +728,22 @@ int main() {
         return -1;
     }
 
+    // Dropping a skeleton onto the window works everywhere, so it doubles as
+    // the way to open files where there is no native dialog.
+    glfwSetDropCallback(window, HandleFileDrop);
+
     glfwMakeContextCurrent(window);
+
+#ifndef __APPLE__
+    // Off macOS every core profile entry point has to be resolved at run time.
+    // Nothing may touch GL before this succeeds.
+    if (!gladLoadGLLoader(reinterpret_cast<GLADloadproc>(glfwGetProcAddress))) {
+        std::cerr << "Failed to initialize the OpenGL loader\n";
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return -1;
+    }
+#endif
 
     // Enable VSync.
     glfwSwapInterval(1);
@@ -700,6 +770,19 @@ int main() {
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 330");
+
+    // --------------------------------------------------------
+    // Load whatever was passed on the command line
+    // --------------------------------------------------------
+
+    // Only relevant on platforms without a native open dialog, but harmless
+    // elsewhere. macOS Finder hands the app a -psn_* argument, hence the
+    // leading dash check.
+    for (int i = 1; i < argc; ++i) {
+        if (argv[i] != nullptr && argv[i][0] != '-' && TryOpenSkeleton(argv[i])) {
+            break;
+        }
+    }
 
     // --------------------------------------------------------
     // Main Loop

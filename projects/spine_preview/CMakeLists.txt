@@ -1,7 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(FETCHCONTENT_FULLY_DISCONNECTED ON CACHE BOOL "Disable FetchContent download" FORCE)
-set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+# The build normally reuses the sources FetchContent already dropped into
+# build/_deps, so it works offline. A fresh checkout (CI, another machine) has
+# nothing there yet and needs -DFETCHCONTENT_FULLY_DISCONNECTED=OFF once, which
+# only works because these are plain cache options rather than forced ones.
+set(FETCHCONTENT_FULLY_DISCONNECTED ON CACHE BOOL "Disable FetchContent download")
+set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type")
 
 # AppKit based file dialogs need the Objective-C++ compiler on macOS.
 if(APPLE)
@@ -76,4 +80,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 
 if(APPLE)
     target_link_libraries(${PROJECT_NAME} PRIVATE ${COCOA_LIBRARY})
+else()
+    # Off macOS nothing agrees on where GL lives: the system headers only reach
+    # 1.1 and every 3.x entry point has to be loaded at run time.
+    target_link_libraries(${PROJECT_NAME} PRIVATE glad)
 endif()

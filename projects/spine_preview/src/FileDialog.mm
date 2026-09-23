@@ -66,6 +66,10 @@ std::string SaveFile(const std::string& title,
     }
 }
 
+bool Available() {
+    return true;
+}
+
 } // namespace FileDialog
 
 #pragma clang diagnostic pop

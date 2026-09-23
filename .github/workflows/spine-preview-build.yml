@@ -1,0 +1,53 @@
+name: Spine preview build
+
+# Second compile target for the desktop tool. It has only ever been built on
+# macOS, where <OpenGL/gl3.h> hands out the whole core profile for free; this
+# exercises the other branch, which needs a real GL loader (glad).
+on:
+  push:
+    paths:
+      - 'projects/spine_preview/**'
+      - '.github/workflows/spine-preview-build.yml'
+  pull_request:
+    paths:
+      - 'projects/spine_preview/**'
+      - '.github/workflows/spine-preview-build.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    defaults:
+      run:
+        working-directory: projects/spine_preview
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+            libxi-dev libxkbcommon-dev \
+            libwayland-dev libwayland-bin wayland-protocols \
+            libgl1-mesa-dev
+
+      # The build reuses whatever FetchContent already dropped into
+      # build/_deps, so a fresh checkout has to be told to download once.
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DFETCHCONTENT_FULLY_DISCONNECTED=OFF
+          -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel 2

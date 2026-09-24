@@ -14,6 +14,9 @@ class App {
 public:
     void OpenSkeletonDialog();
 
+    // Browser-only variant: picks a whole export folder instead of files.
+    void OpenSkeletonFolderDialog();
+
     bool OpenSkeleton(const std::filesystem::path& skeletonPath);
 
     void CloseSkeleton();

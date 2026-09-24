@@ -32,8 +32,45 @@ namespace spine38 {
 #else
 namespace spine {
 #endif
+
+// Upstream's DefaultSpineExtension refuses to read files on Emscripten
+// (spine-cpp 4.2's Extension.cpp: _readFile is guarded by
+// #ifndef __EMSCRIPTEN__ and returns nullptr), which silently breaks the 4.2
+// atlas and skeleton loaders in the browser. stdio works perfectly well
+// against the MEMFS the web file bridge writes into, so this extension reads
+// the same way on every host. The 3.8 runtime has no such guard and always
+// used fopen, so on the desktop this behaves exactly like upstream.
+class StudioSpineExtension : public DefaultSpineExtension {
+protected:
+    char* _readFile(const String& path, int* length) override {
+        if (length == nullptr) {
+            return nullptr;
+        }
+
+        FILE* file = fopen(path.buffer(), "rb");
+
+        if (file == nullptr) {
+            *length = 0;
+            return nullptr;
+        }
+
+        fseek(file, 0, SEEK_END);
+        *length = static_cast<int>(ftell(file));
+        fseek(file, 0, SEEK_SET);
+
+        char* data = SpineExtension::alloc<char>(*length, __FILE__, __LINE__);
+        const size_t read = fread(data, 1, static_cast<size_t>(*length), file);
+        fclose(file);
+
+        // Trust the bytes actually read, not the length ftell promised.
+        *length = static_cast<int>(read);
+
+        return data;
+    }
+};
+
 SpineExtension* getDefaultExtension() {
-    return new DefaultSpineExtension();
+    return new StudioSpineExtension();
 }
 }
 
@@ -147,6 +184,9 @@ public:
         unsigned char* pixels = stbi_load(path.buffer(), &width, &height, &channels, 4);
 
         if (pixels == nullptr) {
+            fprintf(stderr,
+                    "spine-studio: stbi_load failed for %s: %s\n", path.buffer(),
+                    stbi_failure_reason());
             return;
         }
 
@@ -253,6 +293,15 @@ public:
 
         if (atlas_->getPages().size() == 0 || !pageLoaded) {
             error = "Failed to read atlas (or its PNG): " + atlasPath.string();
+
+            // Without this the failure is indistinguishable from a silent
+            // no-op, especially in the browser where stderr is the console.
+            fprintf(stderr,
+                    "spine-studio: atlas load failed: %s\n"
+                    "  pages parsed: %zu, pageLoaded: %s\n",
+                    atlasPath.string().c_str(), atlas_->getPages().size(),
+                    pageLoaded ? "yes" : "no");
+
             Unload();
             return false;
         }

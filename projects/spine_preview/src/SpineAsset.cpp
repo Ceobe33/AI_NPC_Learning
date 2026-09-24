@@ -105,6 +105,17 @@ bool SpineAsset::Load(const std::filesystem::path& skeletonPath,
         return false;
     }
 
+    // The vendored binary parsers read without bounds checks - SkeletonBinary
+    // is literally *cursor++ - so a truncated or mislabelled .skel file would
+    // run past the buffer and crash instead of failing cleanly. Every Spine
+    // binary export carries its dotted version string within the first bytes,
+    // so a file without one never reaches the parser.
+    if (extension == ".skel" && ReadSkeletonVersionString(skeletonPath).empty()) {
+        error_ = "Not a valid Spine binary skeleton: no version header found "
+                 "near the start of " + skeletonPath.string();
+        return false;
+    }
+
     Unload();
 
     // Prefer the runtime matching the version the asset was exported with and

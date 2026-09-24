@@ -51,3 +51,25 @@ jobs:
 
       - name: Build
         run: cmake --build build --parallel 2
+
+  # A ready-to-share macOS app: the packaging script builds a universal
+  # (arm64 + x86_64) bundle, ad-hoc signs it and zips it. The artifact can be
+  # downloaded from the run page and handed to another Mac directly.
+  macos-package:
+    runs-on: macos-latest
+
+    defaults:
+      run:
+        working-directory: projects/spine_preview
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Package
+        run: ./scripts/package-macos.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SpineAnimationStudio-macos
+          path: projects/spine_preview/release/SpineAnimationStudio-macos-*.zip
+          if-no-files-found: error

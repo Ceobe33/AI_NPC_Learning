@@ -9,8 +9,27 @@
 
 namespace {
 
-const char* kVertexShader =
-    "#version 330\n"
+// GLSL ES - the dialect WebGL 2 speaks - differs from desktop GLSL in two
+// ways that matter here: the version directive names ES explicitly, and a
+// fragment shader has to declare a default precision for floats or it will not
+// compile. Desktop GLSL accepts neither line, so they are picked per platform.
+#if defined(__EMSCRIPTEN__)
+const char* kVertexHeader = "#version 300 es\n";
+
+const char* kFragmentHeader =
+    "#version 300 es\n"
+    "precision highp float;\n";
+#else
+const char* kVertexHeader = "#version 330\n";
+
+const char* kFragmentHeader = "#version 330\n";
+#endif
+
+std::string BuildSource(const char* header, const char* body) {
+    return std::string(header) + body;
+}
+
+const std::string kVertexShader = BuildSource(kVertexHeader,
     "layout(location = 0) in vec2 a_position;\n"
     "layout(location = 1) in vec2 a_uv;\n"
     "layout(location = 2) in vec4 a_color;\n"
@@ -22,29 +41,26 @@ const char* kVertexShader =
     "    v_uv = a_uv;\n"
     "    v_color = a_color;\n"
     "    gl_Position = vec4((a_position - u_center) / u_halfSize, 0.0, 1.0);\n"
-    "}\n";
+    "}\n");
 
-const char* kFragmentShader =
-    "#version 330\n"
+const std::string kFragmentShader = BuildSource(kFragmentHeader,
     "in vec2 v_uv;\n"
     "in vec4 v_color;\n"
     "uniform sampler2D u_texture;\n"
     "out vec4 o_color;\n"
     "void main() {\n"
     "    o_color = texture(u_texture, v_uv) * v_color;\n"
-    "}\n";
+    "}\n");
 
 // Fullscreen triangle strip generated from gl_VertexID, no buffers needed.
-const char* kGridVertexShader =
-    "#version 330\n"
+const std::string kGridVertexShader = BuildSource(kVertexHeader,
     "void main() {\n"
     "    vec2 p = vec2(float((gl_VertexID & 1) << 2) - 1.0,\n"
     "                  float((gl_VertexID & 2) << 1) - 1.0);\n"
     "    gl_Position = vec4(p, 0.0, 1.0);\n"
-    "}\n";
+    "}\n");
 
-const char* kGridFragmentShader =
-    "#version 330\n"
+const std::string kGridFragmentShader = BuildSource(kFragmentHeader,
     "uniform vec2 u_origin;\n"  // canvas position of skeleton-space (0, 0)
     "uniform float u_cell;\n"
     "uniform vec3 u_light;\n"
@@ -54,11 +70,13 @@ const char* kGridFragmentShader =
     "    vec2 cell = floor((gl_FragCoord.xy - u_origin) / u_cell);\n"
     "    float checker = mod(cell.x + cell.y, 2.0);\n"
     "    o_color = vec4(mix(u_dark, u_light, checker), 1.0);\n"
-    "}\n";
+    "}\n");
 
-unsigned int CompileShader(unsigned int type, const char* source) {
+unsigned int CompileShader(unsigned int type, const std::string& source) {
     unsigned int shader = glCreateShader(type);
-    glShaderSource(shader, 1, &source, nullptr);
+
+    const char* sourcePointer = source.c_str();
+    glShaderSource(shader, 1, &sourcePointer, nullptr);
     glCompileShader(shader);
 
     int status = 0;

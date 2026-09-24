@@ -15,13 +15,32 @@
 
 #include "App.h"
 #include "FileDialog.h"
+#include "LayoutStore.h"
 #include "PlatformGL.h"
+#include "WebFileBridge.h"
+
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>
+
+#ifdef EMSCRIPTEN_USE_PORT_CONTRIB_GLFW3
+#include <GLFW/emscripten_glfw3.h>
+#endif
+#endif
 
 namespace {
+
+// The DOM elements this module attaches to. They must exist in whichever page
+// boots the wasm; see site/source/spine/index.md for the harness.
+const char* kCanvasSelector = "#spine-studio-canvas";
+const char* kCanvasHostSelector = "#spine-studio";
 
 App gApp;
 
 bool gShowExportDialog = false;
+
+// Set from the File menu; handled at the top of the next frame, where the
+// dock builder can be re-run safely.
+bool gResetLayout = false;
 
 const float kMinSpeed = 0.0f;
 const float kMaxSpeed = 5.0f;
@@ -116,6 +135,12 @@ static void DrawMainMenuBar() {
 
             ImGui::Separator();
 
+            if (ImGui::MenuItem("Reset Layout")) {
+                gResetLayout = true;
+            }
+
+            ImGui::Separator();
+
             if (ImGui::MenuItem("Exit")) {
                 glfwSetWindowShouldClose(glfwGetCurrentContext(), GLFW_TRUE);
             }
@@ -149,6 +174,16 @@ static void DrawSkeletonPanel() {
     ImGui::Text("Skeleton Files");
     ImGui::Separator();
 
+#if defined(__EMSCRIPTEN__)
+    // Always shown in the browser: nothing here ever has a native dialog.
+    ImGui::TextWrapped(
+        "Open the files of your Spine export - the .json or .skel skeleton, "
+        "its .atlas and its page images (multi-select them, or use Open "
+        "Folder to take the whole directory). The files stay in the browser; "
+        "nothing is uploaded. Exported GIFs are offered as a download when "
+        "they finish.");
+    ImGui::Spacing();
+#else
     if (!FileDialog::Available()) {
         ImGui::TextWrapped(
             "This platform has no file dialog. Drop a .json or .skel file onto "
@@ -156,10 +191,22 @@ static void DrawSkeletonPanel() {
             "written to the working directory.");
         ImGui::Spacing();
     }
+#endif
 
     if (ImGui::Button("Open File")) {
         gApp.OpenSkeletonDialog();
     }
+
+#if defined(__EMSCRIPTEN__)
+    // The directory picker greys out individual files, so a .skel can only be
+    // picked through the file variant above. The folder one is still useful
+    // for exports spread over sub-directories.
+    ImGui::SameLine();
+
+    if (ImGui::Button("Open Folder")) {
+        gApp.OpenSkeletonFolderDialog();
+    }
+#endif
 
     ImGui::Spacing();
     ImGui::Separator();
@@ -622,22 +669,31 @@ static void DrawExportProgress() {
     ImGui::End();
 }
 
-static void SetupDefaultDockLayout() {
+// Builds the arrangement every fresh start starts from - identical on desktop
+// and web, which is the point of having it in code instead of a checked-in
+// imgui.ini. dockspaceID must come from inside DockSpaceWindow: ImGui hashes
+// "MainDockSpace" against that window's id stack, and a node built under any
+// other id is simply never displayed.
+//
+// force rebuilds the default arrangement even when a layout already exists,
+// which is what "Reset Layout" needs.
+static void SetupDefaultDockLayout(ImGuiID dockspaceID, bool force) {
     static bool initialized = false;
 
-    if (initialized) {
+    if (initialized && !force) {
         return;
     }
 
     initialized = true;
 
-    const ImGuiID dockspaceID = ImGui::GetID("MainDockSpace");
-
-    // Respect a layout the user saved in imgui.ini.
-    if (ImGuiDockNode* existing = ImGui::DockBuilderGetNode(dockspaceID)) {
-        if (existing->Windows.Size > 0 || existing->ChildNodes[0] != nullptr ||
-            existing->ChildNodes[1] != nullptr) {
-            return;
+    // Respect a layout restored from the layout store.
+    if (!force) {
+        if (ImGuiDockNode* existing = ImGui::DockBuilderGetNode(dockspaceID)) {
+            if (existing->Windows.Size > 0 ||
+                existing->ChildNodes[0] != nullptr ||
+                existing->ChildNodes[1] != nullptr) {
+                return;
+            }
         }
     }
 
@@ -689,10 +745,46 @@ static void DrawDockspace() {
 
     ImGuiID dockspaceID = ImGui::GetID("MainDockSpace");
 
+    // Inside the window on purpose - see the comment on the function. The
+    // builder has to run before DockSpace() so the node exists when the
+    // dockspace is drawn for the first time.
+    if (gResetLayout) {
+        gResetLayout = false;
+        LayoutStore::Clear();
+        SetupDefaultDockLayout(dockspaceID, true);
+    } else {
+        SetupDefaultDockLayout(dockspaceID, false);
+    }
+
     ImGui::DockSpace(dockspaceID, ImVec2(0.0f, 0.0f),
                      ImGuiDockNodeFlags_PassthruCentralNode);
 
     ImGui::End();
+}
+
+// ImGui asks for a save a moment after the last change, so this only has to
+// notice the request and hand the settings to the platform's store. Returns
+// true after a write, so the caller can report progress if it wants to.
+static bool UpdateLayoutPersistence() {
+    ImGuiIO& io = ImGui::GetIO();
+
+    if (!io.WantSaveIniSettings) {
+        return false;
+    }
+
+    // ImGui keeps this set until the application clears it.
+    io.WantSaveIniSettings = false;
+
+    size_t size = 0;
+    const char* data = ImGui::SaveIniSettingsToMemory(&size);
+
+    if (data == nullptr || size == 0) {
+        return false;
+    }
+
+    LayoutStore::Save(std::string(data, size));
+
+    return true;
 }
 
 static void HandleShortcuts() {
@@ -700,6 +792,107 @@ static void HandleShortcuts() {
         gApp.OpenSkeletonDialog();
     }
 }
+
+// The frame loop has to be runnable one iteration at a time. A browser never
+// lets main() own the loop - it calls back into the module instead - so the
+// body lives here and both hosts only decide how often to call it.
+GLFWwindow* gWindow = nullptr;
+float gLastFrameTime = 0.0f;
+
+bool RunFrame() {
+    if (gWindow == nullptr || glfwWindowShouldClose(gWindow)) {
+        return false;
+    }
+
+    glfwPollEvents();
+
+    const float now = static_cast<float>(glfwGetTime());
+    const float deltaTime = now - gLastFrameTime;
+    gLastFrameTime = now;
+
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+
+    HandleShortcuts();
+
+    gApp.Update(deltaTime);
+
+    // Draw application UI.
+
+    DrawMainMenuBar();
+
+    DrawDockspace();
+
+    DrawSkeletonPanel();
+    DrawAnimationPanel();
+    DrawPreviewPanel();
+    DrawPlaybackPanel();
+
+    DrawExportDialog();
+    DrawExportProgress();
+
+    // Advances the GIF export one frame at a time so the progress bar
+    // stays responsive.
+    if (gApp.IsExporting()) {
+        gApp.StepGifExport();
+    }
+
+    // Render.
+
+    ImGui::Render();
+
+    int displayWidth = 0;
+    int displayHeight = 0;
+
+    glfwGetFramebufferSize(gWindow, &displayWidth, &displayHeight);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, displayWidth, displayHeight);
+
+    glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+    glfwSwapBuffers(gWindow);
+
+    UpdateLayoutPersistence();
+
+    return true;
+}
+
+void ShutdownStudio() {
+    gApp.CloseSkeleton();
+
+    // One last write: ImGui only asks for a save a moment after the last
+    // change, so a resize made in the final second would otherwise be lost.
+    size_t settingsSize = 0;
+    const char* settings = ImGui::SaveIniSettingsToMemory(&settingsSize);
+
+    if (settings != nullptr && settingsSize > 0) {
+        LayoutStore::Save(std::string(settings, settingsSize));
+    }
+
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+
+    ImGui::DestroyContext();
+
+    glfwDestroyWindow(gWindow);
+    glfwTerminate();
+
+    gWindow = nullptr;
+}
+
+#if defined(__EMSCRIPTEN__)
+void EmscriptenFrame() {
+    if (!RunFrame()) {
+        ShutdownStudio();
+        emscripten_cancel_main_loop();
+    }
+}
+#endif
 
 int main(int argc, char** argv) {
     // --------------------------------------------------------
@@ -711,12 +904,26 @@ int main(int argc, char** argv) {
         return -1;
     }
 
+#if defined(__EMSCRIPTEN__)
+    // WebGL 2 == GLES 3.0, asked for explicitly. The browser has no desktop
+    // profile and no forward compatibility switch.
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+
+#ifdef EMSCRIPTEN_USE_PORT_CONTRIB_GLFW3
+    // The canvas belongs to the page, not to GLFW, so it has to be named
+    // before the window that draws into it is created.
+    emscripten_glfw_set_next_window_canvas_selector(kCanvasSelector);
+#endif
+#else
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
 #ifdef __APPLE__
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+#endif
 #endif
 
     GLFWwindow* window =
@@ -734,9 +941,9 @@ int main(int argc, char** argv) {
 
     glfwMakeContextCurrent(window);
 
-#ifndef __APPLE__
-    // Off macOS every core profile entry point has to be resolved at run time.
-    // Nothing may touch GL before this succeeds.
+#ifdef SPINE_STUDIO_NEEDS_GL_LOADER
+    // Where GL only reaches 1.1 every core profile entry point has to be
+    // resolved at run time. Nothing may touch GL before this succeeds.
     if (!gladLoadGLLoader(reinterpret_cast<GLADloadproc>(glfwGetProcAddress))) {
         std::cerr << "Failed to initialize the OpenGL loader\n";
         glfwDestroyWindow(window);
@@ -761,6 +968,21 @@ int main(int argc, char** argv) {
     // Enable docking.
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
+    // The layout is persisted by LayoutStore instead: ImGui's own file would
+    // land in the working directory, which a browser cannot offer and a
+    // signed app bundle is not allowed to write to. Leaving it unset is what
+    // switches ImGui into manual mode (io.WantSaveIniSettings).
+    io.IniFilename = nullptr;
+
+    // Restoring first means every platform that has run before shows its own
+    // saved layout, while a fresh one - web or desktop - falls through to the
+    // identical default the dock builder produces.
+    const std::string savedLayout = LayoutStore::Load();
+
+    if (!savedLayout.empty()) {
+        ImGui::LoadIniSettingsFromMemory(savedLayout.c_str(), savedLayout.size());
+    }
+
     // Windows may only be dragged by their title bar. Without this, dragging
     // any empty space moves the window, which fights with the drag-to-pan
     // gesture on the Preview image.
@@ -769,7 +991,33 @@ int main(int argc, char** argv) {
     ImGui::StyleColorsDark();
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
+
+#if defined(__EMSCRIPTEN__)
+    // Without this the canvas keeps the pixel size it was created with and
+    // never follows the window.
+    ImGui_ImplGlfw_InstallEmscriptenCallbacks(window, kCanvasSelector);
+
+#ifdef EMSCRIPTEN_USE_PORT_CONTRIB_GLFW3
+    // Letting the surrounding <div> dictate the size keeps the editor usable in
+    // any layout, including the narrow one this site uses on phones.
+    emscripten_glfw_make_canvas_resizable(window, kCanvasHostSelector, nullptr);
+#endif
+#endif
+
+#if defined(__EMSCRIPTEN__)
+    // The GL version prefix tells ImGui which GLSL dialect to emit. WebGL 2
+    // only understands the ES flavour, even though it runs the same core
+    // features as desktop GL 3.3.
+    ImGui_ImplOpenGL3_Init("#version 300 es");
+#else
     ImGui_ImplOpenGL3_Init("#version 330");
+#endif
+
+    // Lets the browser's directory picker hand whatever skeleton it found over
+    // to App, the same way a drop or a command line argument would.
+    WebFileBridge::SetOpenPathCallback([](const char* path) {
+        return TryOpenSkeleton(path);
+    });
 
     // --------------------------------------------------------
     // Load whatever was passed on the command line
@@ -788,77 +1036,19 @@ int main(int argc, char** argv) {
     // Main Loop
     // --------------------------------------------------------
 
-    float lastTime = static_cast<float>(glfwGetTime());
+    gWindow = window;
+    gLastFrameTime = static_cast<float>(glfwGetTime());
 
-    while (!glfwWindowShouldClose(window)) {
-        glfwPollEvents();
-
-        const float now = static_cast<float>(glfwGetTime());
-        const float deltaTime = now - lastTime;
-        lastTime = now;
-
-        ImGui_ImplOpenGL3_NewFrame();
-        ImGui_ImplGlfw_NewFrame();
-        ImGui::NewFrame();
-
-        HandleShortcuts();
-
-        gApp.Update(deltaTime);
-
-        // Draw application UI.
-
-        DrawMainMenuBar();
-
-        DrawDockspace();
-        SetupDefaultDockLayout();
-
-        DrawSkeletonPanel();
-        DrawAnimationPanel();
-        DrawPreviewPanel();
-        DrawPlaybackPanel();
-
-        DrawExportDialog();
-        DrawExportProgress();
-
-        // Advances the GIF export one frame at a time so the progress bar
-        // stays responsive.
-        if (gApp.IsExporting()) {
-            gApp.StepGifExport();
-        }
-
-        // Render.
-
-        ImGui::Render();
-
-        int displayWidth = 0;
-        int displayHeight = 0;
-
-        glfwGetFramebufferSize(window, &displayWidth, &displayHeight);
-
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glViewport(0, 0, displayWidth, displayHeight);
-
-        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
-
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-        glfwSwapBuffers(window);
+#if defined(__EMSCRIPTEN__)
+    // Returning to the browser is what keeps the page responsive; asking for
+    // 0 frames per second means "match requestAnimationFrame".
+    emscripten_set_main_loop(EmscriptenFrame, 0, true);
+#else
+    while (RunFrame()) {
     }
 
-    // --------------------------------------------------------
-    // Cleanup
-    // --------------------------------------------------------
-
-    gApp.CloseSkeleton();
-
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
-
-    ImGui::DestroyContext();
-
-    glfwDestroyWindow(window);
-    glfwTerminate();
+    ShutdownStudio();
+#endif
 
     return 0;
 }

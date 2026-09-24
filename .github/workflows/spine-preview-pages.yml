@@ -1,0 +1,108 @@
+name: Spine Animation Studio pages
+
+# Compiles the desktop tool to WebAssembly, builds the static site around it and
+# publishes the result to GitHub Pages.
+#
+# The desktop compile checks live in spine-preview-build.yml; this one only
+# covers the browser target and the site, so the two can fail independently.
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'projects/spine_preview/**'
+      - 'site/**'
+      - '.github/workflows/spine-preview-pages.yml'
+  pull_request:
+    paths:
+      - 'projects/spine_preview/**'
+      - 'site/**'
+      - '.github/workflows/spine-preview-pages.yml'
+  workflow_dispatch:
+
+# Needed by actions/deploy-pages and hexo-deployer-git alike.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# A stray re-run of an older push must not overwrite a newer deployment.
+concurrency:
+  group: spine-animation-studio-pages
+  cancel-in-progress: false
+
+jobs:
+  pages:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install emsdk
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$HOME/emsdk"
+          cd "$HOME/emsdk"
+          ./emsdk install latest
+          ./emsdk activate latest
+
+      # ImGui still arrives through FetchContent; GLFW does not, it is an
+      # Emscripten contrib port the CMake project requests itself.
+      #
+      # The script finds emsdk at $HOME/emsdk by itself, which is where it was
+      # cloned above.
+      - name: Build the WebAssembly module
+        working-directory: projects/spine_preview
+        run: ./scripts/build-wasm.sh
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # url and root decide how every asset is linked, and both follow from the
+      # repository name. Writing them in here keeps site/_config.yml free of
+      # someone else's account name.
+      - name: Point the site at this repository
+        working-directory: site
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          REPO_NAME="${REPOSITORY#*/}"
+          BASE="https://${REPOSITORY%%/*}.github.io"
+          # A <owner>.github.io repository publishes at the domain root;
+          # anything else is served under /<repo>/.
+          if [ "$REPO_NAME" = "${REPOSITORY%%/*}.github.io" ]; then
+            ROOT="/"
+          else
+            ROOT="/${REPO_NAME}/"
+          fi
+          echo "url: ${BASE}  root: ${ROOT}"
+          sed -i "s|^url:.*|url: ${BASE}|" _config.yml
+          sed -i "s|^root:.*|root: ${ROOT}|" _config.yml
+
+      - name: Install site dependencies
+        working-directory: site
+        run: npm ci
+
+      - name: Generate the site
+        working-directory: site
+        run: npx hexo generate
+
+      - name: Fail loudly if the module is missing
+        working-directory: site
+        run: |
+          test -f public/spine-studio/spine-animation-studio.js
+          test -f public/spine-studio/spine-animation-studio.wasm
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/public
+
+      # Deploy every branch build; skipped on pull requests because those have
+      # no permission to write pages.
+      - name: Deploy to GitHub Pages
+        if: github.event_name != 'pull_request'
+        id: deployment
+        uses: actions/deploy-pages@v4

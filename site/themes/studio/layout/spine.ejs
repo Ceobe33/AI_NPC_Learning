@@ -1,0 +1,100 @@
+<%
+  // Harness for the WebAssembly build.
+  //
+  // The module itself is a plain file next to this page: the Emscripten build
+  // writes spine-animation-studio.js and .wasm into source/spine-studio/, which
+  // Hexo copies verbatim into public/. Booting is done here rather than by an
+  // Emscripten HTML shell so the app sits inside the site's own chrome instead
+  // of inside an iframe.
+  //
+  // #spine-studio and #spine-studio-canvas are looked up from C++: see
+  // kCanvasSelector / kCanvasHostSelector in src/main.cpp. Renaming either here
+  // means renaming them there.
+%>
+<div class="studio-intro">
+  <p>
+    Choose the files of your Spine export &mdash; the .json or .skel skeleton,
+    its .atlas and its page images &mdash; or take the whole folder. Files are
+    read in the browser and never uploaded. Exported GIFs come back as a
+    download.
+  </p>
+  <p id="spine-studio-status" class="studio-status">Loading&hellip;</p>
+</div>
+
+<div id="spine-studio">
+  <canvas id="spine-studio-canvas" width="1280" height="720" tabindex="1"></canvas>
+</div>
+
+<style>
+  .studio-intro { margin-bottom: 12px; color: #9aa2af; }
+  .studio-intro p { margin: 0 0 6px; }
+  .studio-status { font-size: 13px; color: #8b93a1; }
+  .studio-status.error { color: #ff8b8b; }
+  .studio-status.ready { color: #6fbf85; }
+
+  /* The C++ side asks Emscripten to keep the canvas sized to this element, so
+     whatever height it has is the height the editor gets. */
+  #spine-studio {
+    position: relative;
+    width: 100%;
+    height: calc(100vh - 260px);
+    min-height: 420px;
+    border: 1px solid #262b33;
+    border-radius: 8px;
+    overflow: hidden;
+    background: #101216;
+  }
+  #spine-studio-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    outline: none;
+  }
+</style>
+
+<script>
+(function () {
+  var status = document.getElementById('spine-studio-status');
+  var canvas = document.getElementById('spine-studio-canvas');
+
+  function setStatus(text, kind) {
+    status.textContent = text;
+    status.className = 'studio-status' + (kind ? ' ' + kind : '');
+  }
+
+  function missingBuild() {
+    setStatus('The studio has not been built yet. Run scripts/build-wasm.sh in '
+      + 'projects/spine_preview to generate the WebAssembly module, then '
+      + 'rebuild this site.', 'error');
+  }
+
+  var source = '<%- url_for("/spine-studio/spine-animation-studio.js") %>';
+
+  var script = document.createElement('script');
+  script.src = source;
+  script.onerror = missingBuild;
+  script.onload = function () {
+    if (typeof window.SpineAnimationStudio !== 'function') {
+      missingBuild();
+      return;
+    }
+
+    setStatus('Starting the engine…');
+
+    window.SpineAnimationStudio({
+      canvas: canvas,
+      print: function (text) { console.log('[studio] ' + text); },
+      printErr: function (text) { console.warn('[studio] ' + text); },
+      onAbort: function (reason) {
+        setStatus('The engine stopped unexpectedly: ' + reason, 'error');
+      }
+    }).then(function () {
+      setStatus('Ready — use "Open File" inside the app to pick your export '
+        + 'folder.', 'ready');
+    }).catch(function (error) {
+      setStatus('Could not start the engine: ' + error, 'error');
+    });
+  };
+  document.body.appendChild(script);
+})();
+</script>

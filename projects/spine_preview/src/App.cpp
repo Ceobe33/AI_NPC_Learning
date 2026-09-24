@@ -2,6 +2,7 @@
 
 #include "FileDialog.h"
 #include "PlatformGL.h"
+#include "WebFileBridge.h"
 
 #include <algorithm>
 #include <cmath>
@@ -56,6 +57,15 @@ void BoxDownsample(const unsigned char* src, int srcWidth, int srcHeight,
 // ---------------------------------------------------------------------------
 
 void App::OpenSkeletonDialog() {
+    // In the browser the pick happens in JavaScript and the chosen skeleton
+    // arrives later through WebFileBridge's callback, so there is nothing to
+    // wait on here. FileDialog::OpenFile is a stub there - calling it would
+    // yield an empty path and make the button look dead.
+    if (WebFileBridge::Available()) {
+        WebFileBridge::OpenSkeletonFiles();
+        return;
+    }
+
     const std::string path = FileDialog::OpenFile(
         "Open Spine Skeleton",
         std::vector<std::string>(std::begin(kSkeletonFilters),
@@ -66,6 +76,17 @@ void App::OpenSkeletonDialog() {
     }
 
     OpenSkeleton(path);
+}
+
+void App::OpenSkeletonFolderDialog() {
+    // A folder only makes sense as a browser concept: on the desktop the file
+    // dialog already lets the user reach whatever they need.
+    if (WebFileBridge::Available()) {
+        WebFileBridge::OpenSkeletonFolder();
+        return;
+    }
+
+    OpenSkeletonDialog();
 }
 
 bool App::OpenSkeleton(const std::filesystem::path& skeletonPath) {
@@ -397,6 +418,11 @@ bool App::StepGifExport() {
 
         statusMessage = "Exported " + std::to_string(exportFrameCount_) +
                         " frames to " + lastExportPath;
+
+        // MEMFS is wiped when the tab closes, so the file has to leave the
+        // browser while the user still expects it.
+        WebFileBridge::DownloadFile(lastExportPath);
+
         return false;
     }
 

@@ -1,0 +1,78 @@
+# Hexo Configuration
+# https://hexo.io/docs/configuration
+
+# Site
+title: Spine Animation Studio
+subtitle: Watch Spine skeletons and export animated GIFs, in the browser
+description: >-
+  A WebAssembly build of the Spine Animation Studio desktop tool. Everything
+  runs on your machine: the skeleton files you choose never leave the page.
+author: Spine Animation Studio
+language: en
+timezone:
+
+# URL
+#
+# Both values depend on where the site is published, so the GitHub Actions
+# workflow rewrites them for every repository.
+#
+#   user/organisation page -> url: https://<owner>.github.io,  root: /
+#   project page           -> url: https://<owner>.github.io,  root: /<repo>/
+url: https://example.github.io
+root: /
+
+# Directory
+source_dir: source
+public_dir: public
+tag_dir: tags
+archive_dir: archives
+category_dir: categories
+i18n_dir: :lang
+skip_render:
+
+# Writing
+new_post_name: :title.md
+default_layout: post
+auto_spacing: false
+titlecase: false
+external_link:
+  enable: true
+  field: site
+  exclude: ''
+filename_case: 0
+render_drafts: false
+post_asset_folder: false
+relative_link: false
+future: true
+highlight:
+  enable: false
+
+# Home page setting
+index_generator:
+  path: ''
+  per_page: 10
+  order_by: -date
+
+# Date / Time format
+date_format: YYYY-MM-DD
+time_format: HH:mm:ss
+
+# Pagination
+per_page: 10
+pagination_dir: page
+
+# Extensions
+# The theme lives in themes/studio and holds nothing but this site's layout,
+# which keeps the published HTML free of anything we did not write.
+theme: studio
+
+# Deployment
+#
+# `npx hexo deploy` pushes the generated public/ to the gh-pages branch. The
+# repository URL belongs to wherever this lives, hence the workflow writes it in
+# from ${{ github.repository }} rather than hard-coding it here.
+deploy:
+  type: git
+  repo:
+  branch: gh-pages
+  message: 'Deploy Spine Animation Studio from CI: {{ now("YYYY-MM-DD HH:mm:ss") }}'

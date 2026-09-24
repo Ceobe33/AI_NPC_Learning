@@ -1,0 +1,23 @@
+<%
+  // One temporary data file = one index page.
+  let posts = site.posts.sort('date', -1);
+%>
+<h2>Posts</h2>
+<% if (!posts.length) { %>
+  <p>Nothing here yet.</p>
+<% } else { %>
+  <ul class="post-list">
+    <% posts.each(function (post) { %>
+      <li>
+        <a href="<%- url_for(post.path) %>"><%= post.title %></a>
+        <span class="meta"><%= date(post.date, config.date_format) %></span>
+      </li>
+    <% }); %>
+  </ul>
+<% } %>
+
+<h2>Studio</h2>
+<p>
+  <a href="<%- url_for('/studio/') %>">Open Spine Animation Studio</a> &mdash;
+  plays Spine skeletons and exports animated GIFs entirely in your browser.
+</p>

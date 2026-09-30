@@ -1,0 +1,153 @@
+---
+# Hexo 会把 source 下的 .html 也当页面渲染并套上主题布局（核心自带 html→html
+# 渲染器）。layout: false 让它原样输出，于是这个页面不依赖任何主题，也不需要
+# 在博客的 _config.yml 里加 skip_render。生成时这段 front matter 会被去掉。
+layout: false
+# 固定地址：不管这个目录被放到 source/ 的哪一层（甚至被丢进 _posts/），
+# 页面都落在 <站点根>/spine-studio/。改这一行就能换地址。
+permalink: /spine-studio/
+---
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spine Animation Studio</title>
+<meta name="description" content="在浏览器里查看 Spine 骨骼动画并导出 GIF，全部在本地运行，文件不上传。">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    background: #14161a;
+    color: #d8dde5;
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  header {
+    padding: 14px 20px 10px;
+    border-bottom: 1px solid #262b33;
+  }
+  header h1 { margin: 0; font-size: 16px; font-weight: 500; }
+  .hint { margin: 4px 0 0; color: #8b93a1; font-size: 13px; }
+  #spine-studio-status { margin: 6px 0 0; font-size: 13px; color: #8b93a1; }
+  #spine-studio-status.error { color: #ff8b8b; }
+  #spine-studio-status.ready { color: #6fbf85; }
+  main { flex: 1 1 auto; min-height: 0; padding: 16px 20px 20px; }
+  /* C++ 侧让 Emscripten 把 canvas 尺寸跟随这个容器，所以它的高度就是编辑器的高度 */
+  #spine-studio {
+    width: 100%;
+    height: 100%;
+    min-height: 320px;
+    border: 1px solid #262b33;
+    border-radius: 8px;
+    overflow: hidden;
+    background: #101216;
+  }
+  #spine-studio-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    outline: none;
+    touch-action: none;
+  }
+  a { color: #7fb2ff; }
+  button {
+    font: inherit;
+    font-size: 13px;
+    color: #d8dde5;
+    background: #22262e;
+    border: 1px solid #333944;
+    border-radius: 6px;
+    padding: 3px 10px;
+    cursor: pointer;
+  }
+  button:hover { background: #2b303a; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Spine Animation Studio <button id="fullscreen" type="button">全屏</button></h1>
+  <p class="hint">
+    用应用里的 Open File / Open Folder 选择 Spine 导出文件（骨架 .json 或 .skel、
+    .atlas 与图集图片）。文件只在浏览器里读取，不会上传；导出的 GIF 直接下载到本地。
+  </p>
+  <p id="spine-studio-status">正在加载…</p>
+</header>
+
+<main>
+  <!--
+    这两个 id 是 C++ 直接查的：src/main.cpp 里的 kCanvasSelector /
+    kCanvasHostSelector。改这里就要改那边。
+  -->
+  <div id="spine-studio">
+    <canvas id="spine-studio-canvas" width="1280" height="720" tabindex="1"></canvas>
+  </div>
+</main>
+
+<script>
+(function () {
+  var host = document.getElementById('spine-studio');
+  var canvas = document.getElementById('spine-studio-canvas');
+  var status = document.getElementById('spine-studio-status');
+
+  function setStatus(text, kind) {
+    status.textContent = text;
+    status.className = kind || '';
+  }
+
+  document.getElementById('fullscreen').addEventListener('click', function () {
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else if (host.requestFullscreen) {
+      host.requestFullscreen();
+    }
+  });
+
+  var probe = document.createElement('canvas');
+  if (!probe.getContext('webgl2')) {
+    setStatus('这个浏览器不支持 WebGL 2，无法运行。请换用 2017 年之后的主流浏览器。', 'error');
+    return;
+  }
+
+  // 相对路径：这段 JS 和 .wasm 永远在一起，页面放在站点哪一层都能跑。
+  // Emscripten 用 document.currentScript.src 推导 wasm 位置，所以必须作为
+  // 外部文件加载，不能内联进 HTML。
+  var script = document.createElement('script');
+  script.src = './spine-animation-studio.js';
+  script.onerror = function () {
+    setStatus('没找到 WebAssembly 模块：请把 spine-animation-studio.js 和 .wasm '
+      + '放在本页同一个目录下（scripts/package-web.sh 会做这件事）。', 'error');
+  };
+  script.onload = function () {
+    if (typeof window.SpineAnimationStudio !== 'function') {
+      setStatus('模块加载异常：spine-animation-studio.js 没有导出启动函数。', 'error');
+      return;
+    }
+
+    setStatus('正在启动引擎…');
+
+    window.SpineAnimationStudio({
+      canvas: canvas,
+      print: function (text) { console.log('[studio] ' + text); },
+      printErr: function (text) { console.warn('[studio] ' + text); },
+      onAbort: function (reason) {
+        setStatus('引擎意外停止：' + reason, 'error');
+      }
+    }).then(function () {
+      setStatus('就绪 —— 用应用内的 Open File 选择你的 Spine 导出文件。', 'ready');
+      canvas.focus();
+    }).catch(function (error) {
+      setStatus('引擎启动失败：' + error, 'error');
+    });
+  };
+  document.body.appendChild(script);
+})();
+</script>
+
+</body>
+</html>

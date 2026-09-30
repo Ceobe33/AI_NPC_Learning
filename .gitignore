@@ -17,4 +17,5 @@ node_modules
 app
 .DS_Store
 .workbuddy
+.workbuddy-ai
 tags
